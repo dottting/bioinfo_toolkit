@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generates ESM3 protein folds from an input file and saves them as PDB files."""
 
-import argparse, logging, tqdm, tarfile
+import argparse, logging, tqdm, tarfile, torch, io
 import pandas as pd
 from pathlib import Path
 from huggingface_hub import login
@@ -16,13 +16,16 @@ def setup_logger():
     )
 
 
-def get_esm_folds(df, client, output_dir):
-    """Generates protein folds from sequences in a DataFrame and saves them as PDB files."""
+def get_esm_folds(df, client, output_dir, max_len, tar=None):
+    """Generates protein folds from sequences in a DataFrame.
 
+    If tar is provided, writes PDBs directly into the tar archive.
+    Otherwise, saves them as individual files.
+    """
     for _, row in tqdm.tqdm(
         df.iterrows(), total=len(df), desc="Predicting protein structures"
     ):
-        seq = row["sequence"][:1500]  # limit sequence length
+        seq = row["sequence"]
         protein = ESMProtein(sequence=seq)
         config = GenerationConfig(
             track="structure",
@@ -31,27 +34,36 @@ def get_esm_folds(df, client, output_dir):
             temperature=0.7,
         )
         try:
+            if len(seq) > max_len:
+                raise Exception("Protein longer than max length")
             folded_protein = client.generate(protein, config)
             if not isinstance(folded_protein, ESMProtein):
                 raise TypeError(
                     f"Expected ESMProtein, got {type(folded_protein)} for ID {row['protein_id']}"
                 )
-            pdb_file = output_dir / f"{row['protein_id']}.pdb"
-            folded_protein.to_pdb(pdb_file)
-            logging.info(
-                f"Saved folded structure for {row['protein_id']} to {pdb_file}"
-            )
+
+            pdb_filename = f"{row['protein_id']}.pdb"
+
+            if tar is not None:
+                # Write directly into tar
+                pdb_buffer = io.StringIO()
+                folded_protein.to_pdb(pdb_buffer)
+                pdb_bytes = pdb_buffer.getvalue().encode("utf-8")
+                info = tarfile.TarInfo(name=pdb_filename)
+                info.size = len(pdb_bytes)
+                tar.addfile(info, io.BytesIO(pdb_bytes))
+                pdb_buffer.close()
+                logging.info(f"Added {pdb_filename} to tar archive.")
+            else:
+                # Write to disk normally
+                pdb_file = output_dir / pdb_filename
+                folded_protein.to_pdb(pdb_file)
+                logging.info(
+                    f"Saved folded structure for {row['protein_id']} to {pdb_file}"
+                )
+
         except Exception as e:
-            logging.info(f"Skipped {row['protein_id']} with exception {e}")
-
-
-def compress_pdbs(output_dir, archive_name="all_pdbs.tar.gz"):
-    """Compress all PDB files in output_dir into a single gzip tar file."""
-    archive_path = output_dir / archive_name
-    with tarfile.open(archive_path, "w:gz") as tar:
-        for pdb_file in output_dir.glob("*.pdb"):
-            tar.add(pdb_file, arcname=pdb_file.name)
-    logging.info(f"Compressed all PDBs into {archive_path}")
+            logging.info(f"Skipped {row['protein_id']} with exception: {e}")
 
 
 def main():
@@ -71,7 +83,7 @@ def main():
         type=Path,
         required=False,
         default=Path("./data/protein_structures"),
-        help="Directory to save output PDB files.",
+        help="Directory to save output PDB files or archive.",
     )
     parser.add_argument(
         "-t",
@@ -84,17 +96,21 @@ def main():
         "-c",
         "--compress",
         action="store_true",
-        help="Compress all generated PDB files into a single gzip tarball.",
+        help="If set, directly write all generated PDBs into a single gzip tar instead of saving separately.",
+    )
+    parser.add_argument(
+        "--len_cutoff",
+        default=1500,
+        type=int,
+        help="Maximum protein length to fold.",
     )
 
     args = parser.parse_args()
     setup_logger()
 
-    # Login and load model
-    login(token=args.token)
-    logging.info("Logged into Hugging Face Hub.")
-    client = ESM3.from_pretrained("esm3-open").to("cuda")
-    logging.info("Loaded ESM3 model.")
+    # Check CUDA
+    if not torch.cuda.is_available():
+        raise Exception("CUDA is not available.")
 
     # Read input
     if not args.input.exists():
@@ -102,20 +118,24 @@ def main():
     df = pd.read_csv(args.input, sep="\t")
 
     if not {"protein_id", "sequence"}.issubset(df.columns):
-        raise ValueError(
-            "Input DataFrame must contain 'protein_id' and 'sequence' columns."
-        )
+        raise ValueError("Input TSV must contain 'protein_id' and 'sequence' columns.")
 
-    # Create output dir if it doesnt exist
+    # Create output dir if not compressing
     args.output.mkdir(parents=True, exist_ok=True)
 
-    # Process sequences
-    get_esm_folds(df, client, args.output)
+    # Login and load model
+    login(token=args.token)
+    logging.info("Logged into Hugging Face Hub.")
+    client = ESM3.from_pretrained("esm3-open").to("cuda")
+    logging.info("Loaded ESM3 model.")
 
-    # Optional compression
     if args.compress:
-        logging.info("Compressing files...")
-        compress_pdbs(args.output)
+        archive_path = args.output / "all_pdbs.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            get_esm_folds(df, client, args.output, args.len_cutoff, tar=tar)
+        logging.info(f"All PDBs written into archive {archive_path}")
+    else:
+        get_esm_folds(df, client, args.output, args.len_cutoff)
 
 
 if __name__ == "__main__":
