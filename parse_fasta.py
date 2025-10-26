@@ -13,6 +13,8 @@ from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from Bio.SeqFeature import SeqFeature, FeatureLocation
 import re
+import pandas as pd
+from pathlib import Path
 
 
 def parse_fasta(infile: str):
@@ -78,3 +80,15 @@ def parse_description(description) -> list:
             dbxrefs.append(item.split("=")[1])
 
     return [name, desc, id, features, dbxrefs]
+
+
+def fasta_to_list(in_dir, outfile="./fasta_list.tsv"):
+    base_path = Path(in_dir)
+    data = []
+    for file in base_path.iterdir():
+        for record in parse_fasta(file):
+            data.append([file.stem, record.id, str(record.seq), record.description])
+
+    pd.DataFrame(
+        data, columns=["Accession", "Protein_id", "Sequence", "Description"]
+    ).to_csv(outfile, sep="\t", index=False)

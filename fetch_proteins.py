@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Fetch phage protein sequences from NCBI given a list of GenBank accessions.
+Fetch protein sequences from NCBI given a list of GenBank accessions.
 
 Example usage:
     python fetch_phage_proteins.py \
-        --input ../data/accession_list.csv \
-        --outdir ../data/proteins \
+        --input ./data/accession_list.csv \
+        --outdir ./data/proteins \
         --email your_email@example.com
 """
 
@@ -18,7 +18,7 @@ import sys
 
 
 def fetch_proteins(accession, outdir, retries=3, delay=2):
-    """Fetch protein sequences for one phage accession and save to FASTA."""
+    """Fetch protein sequences for a given accession and save to FASTA."""
     print(f"Fetching phage data with id: {accession}")
     for attempt in range(1, retries + 1):
         try:
@@ -48,14 +48,12 @@ def fetch_proteins(accession, outdir, retries=3, delay=2):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Fetch phage protein FASTA files from NCBI."
-    )
+    parser = argparse.ArgumentParser(description="Fetch protein FASTA files from NCBI.")
     parser.add_argument(
         "-i",
         "--input",
         required=True,
-        help="CSV file with a column 'Accession'",
+        help="Text file containing a newline-seperated list of Accessions",
     )
     parser.add_argument(
         "-o",
@@ -66,7 +64,7 @@ def main():
     parser.add_argument(
         "-e",
         "--email",
-        required=True,
+        default="your_email@example.com",
         help="Your email address (required by Entrez)",
     )
     args = parser.parse_args()
